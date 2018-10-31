@@ -6,6 +6,8 @@ record Child, pid : Int32, slf : Process, status_pipe : IO::FileDescriptor
 class CloningMachine
 	DFLT_PROC_DIR     = "/tmp/proc_respawn"	
 	@children : Hash(Int32, Child)
+	@sgnl_sigexit_rcvd : Channel(Nil)?
+	@sgnl_sigchld_rcvd : Channel(Nil)?
 	
 	def initialize(@how_much_clones : Int32, @log : Logger = Logger.new(STDERR), @tmp_dir = DFLT_PROC_DIR)
 		raise "Clones number is not valid" unless @how_much_clones > 0
@@ -16,25 +18,31 @@ class CloningMachine
       {child.pid, child}
     end.to_h
     
-    sgnl_sigexit_rcvd = Channel(Nil).new
-    sgnl_sigchld_rcvd : Channel(Nil)? = Channel(Nil).new
+    @sgnl_sigexit_rcvd = Channel(Nil).new
+    @sgnl_sigchld_rcvd = Channel(Nil).new
 
     Signal::CHLD.trap do
       @log.info "parent(SIGCHLD): forked proc exited"
-      if ch = sgnl_sigchld_rcvd
+      if ch = @sgnl_sigchld_rcvd
         ch.send(nil)
       end
     end
 
     {% for sgnl in %w(HUP TERM INT) %}
       Signal::{{sgnl.id}}.trap do
-        sgnl_sigexit_rcvd.send(nil)
+      	if ch = @sgnl_sigexit_rcvd
+        	ch.send(nil)
+        end
       end
     {% end %}
 
     spawn do
-      sgnl_sigexit_rcvd.receive
-      sgnl_sigchld_rcvd = nil
+    	if ch = @sgnl_sigexit_rcvd
+      	ch.receive
+      end
+      @sgnl_sigchld_rcvd = nil
+      @sgnl_sigexit_rcvd = nil
+      
       @log.warn "Some of the exit signals received, we have to kill all forked processes"
       show_clones
 
@@ -53,13 +61,14 @@ class CloningMachine
     end
 
     loop do
-      if ch = sgnl_sigchld_rcvd
+      if ch = @sgnl_sigchld_rcvd
         ch.receive
       end
 
       @children.each do |child_pid, child|
         if child.slf.terminated?
           @log.info "parent: child ##{child_pid} exited"
+          child.status_pipe.finalize
           @children.delete(child_pid)
           new_child = fork_me
           @children[new_child.pid] = new_child
