@@ -1,6 +1,4 @@
 require "logger"
-log = Logger.new(STDERR, Logger::DEBUG)
-
 N_CHILDREN = 5
 
 record Child, pid : Int32, slf : Process, status_pipe : IO::FileDescriptor
