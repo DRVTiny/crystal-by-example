@@ -1,20 +1,32 @@
 require "logger"
-N_CHILDREN = 5
+require "json"
 
+N_CHILDREN = 5
+PROC_CTL_PATH = "/tmp/proc_respawn"
 record Child, pid : Int32, slf : Process, status_pipe : IO::FileDescriptor
 
+class GlobalLogger
+	@@logger = Logger.new(STDERR, Logger::DEBUG)
+	def self.gimme
+		@@logger
+	end
+end
+
 class CloningMachine
-	DFLT_PROC_DIR     = "/tmp/proc_respawn"	
 	@children : Hash(Int32, Child)
 	@sgnl_sigexit_rcvd : Channel(Nil)?
 	@sgnl_sigchld_rcvd : Channel(Nil)?
+	@log : Logger
+	@what2do : Proc(Int32)
 	
-	def initialize(@how_much_clones : Int32, @log : Logger = Logger.new(STDERR), @tmp_dir = DFLT_PROC_DIR)
+	def initialize(@how_much_clones : Int32, &block: -> Int32)
 		raise "Clones number is not valid" unless @how_much_clones > 0
+		@log = GlobalLogger.gimme
+		@what2do = block
     @children = (1..@how_much_clones).map do |proc_n|
-      log.info "parent: initially spawning (#{proc_n}) child"
+      @log.info "parent: initially spawning (#{proc_n}) child"
       child = fork_me
-      log.info "parent: forked child ##{child.pid}"
+      @log.info "parent: forked child ##{child.pid}"
       {child.pid, child}
     end.to_h
     
@@ -82,30 +94,22 @@ class CloningMachine
     comm_pipe_read, comm_pipe_write = IO.pipe
     
     my_clone = Process.fork do
+    	Signal::CHLD.ignore
       {% for sgnl in %w(HUP TERM INT) %}
-        Signal::{{sgnl.id}}.trap { exit }
+        Signal::{{sgnl.id}}.reset
       {% end %}
-      wait4file = "#{@tmp_dir}/#{Process.pid}"
-      @log.info "child##{Process.pid}: starting to poll for file #{wait4file} appearing"
       begin
-        loop do
-          if File.exists?(wait4file)
-            @log.info "child##{Process.pid}: my file #{wait4file} is here, so raising exception"
-            raise ""
-          end
-          sleep 1
-        end
-      rescue
-        File.delete(wait4file) if File.exists?(wait4file)
-        comm_pipe_write.puts("i am ##{Process.pid}, i've succeed and i am gone")
-        exit(1)
-      end
+	      exit(@what2do.call)
+	    rescue ex
+	    	comm_pipe_write.puts({error: ex.message}.to_json)
+	    	exit(1)
+	    end
     end
     
     spawn do
       begin
         res = comm_pipe_read.gets
-        @log.warn("my child told me: #{res}")
+        @log.warn(%<my child told me about error: #{(res ? JSON.parse(res)["error"]? : nil) || "nothing"}>)
       rescue
       end
     end
@@ -118,4 +122,17 @@ class CloningMachine
   end
 end
 
-cm = CloningMachine.new(N_CHILDREN)
+cm = CloningMachine.new(N_CHILDREN) do
+    wait4file = "#{PROC_CTL_PATH}/#{Process.pid}"
+    log = GlobalLogger.gimme
+    log.info "child##{Process.pid}: starting to poll for file #{wait4file} appearing"
+    loop do
+      if File.exists?(wait4file)
+        log.info "child##{Process.pid}: my file #{wait4file} is here, so raising exception"
+        File.delete(wait4file) if File.exists?(wait4file)
+        raise "Oh no, you've touched #{wait4file}!"
+      end
+      sleep 1
+    end
+    0
+end
