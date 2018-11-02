@@ -13,13 +13,14 @@ class GlobalLogger
 end
 
 class CloningMachine
+	MIN_TIME_BTW_FORKS = 5
 	@children : Hash(Int32, Child)
 	@sgnl_sigexit_rcvd : Channel(Nil)?
 	@sgnl_sigchld_rcvd : Channel(Nil)?
 	@log : Logger
 	@what2do : Proc(Int32)
 	
-	def initialize(@how_much_clones : Int32, &block: -> Int32)
+	def initialize(@how_much_clones : Int32, @min_time_btw_forks = MIN_TIME_BTW_FORKS, &block: -> Int32)
 		raise "Clones number is not valid" unless @how_much_clones > 0
 		@log = GlobalLogger.gimme
 		@what2do = block
@@ -71,17 +72,25 @@ class CloningMachine
       
       exit
     end
-
+    
+    t = Time.new
+		ts_prv_fork = t.epoch
     loop do
       if ch = @sgnl_sigchld_rcvd
         ch.receive
       end
-
+      
+			if (ts_delta = @min_time_btw_forks.to_i64 - (t.epoch - ts_prv_fork)) > 0
+				@log.warn("Respawning too fast, wait for #{ts_delta} sec to do next fork")
+				sleep ts_delta
+			end
+			
       @children.each do |child_pid, child|
         if child.slf.terminated?
           @log.info "parent: child ##{child_pid} exited"
           child.status_pipe.finalize
           @children.delete(child_pid)
+          ts_prv_fork = t.epoch
           new_child = fork_me
           @children[new_child.pid] = new_child
         end
