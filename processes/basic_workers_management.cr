@@ -1,5 +1,6 @@
 require "logger"
 require "json"
+require "file_utils"
 
 N_CHILDREN    = 5
 PROC_CTL_PATH = "/tmp/proc_respawn"
@@ -15,6 +16,36 @@ class GlobalLogger
 
   def self.gimme
     @@logger
+  end
+end
+
+class Cleaner
+  def initialize
+    @clean_procs = [] of Proc(Nil)
+    @fs_objects = {files: [] of String, dirs: [] of String}
+  end
+
+  def add_proc(args : T, &block : T -> Int32) forall T
+    @clean_procs.push(
+      ->{
+        block.call(args)
+      })
+  end
+
+  {% for subst in ["file", "dir"] %}
+		def add_{{subst.id}}(path : (Array(String)|String))
+			if path.is_a?(Array(String))
+				@fs_objects[:{{subst.id}}s].concat(path)
+			else
+				@fs_objects[:{{subst.id}}s].push(path)
+			end
+		end
+	{% end %}
+
+  def make_mrproper
+    @clean_procs.each { |p| p.call }
+    FileUtils.rm(@fs_objects[:files].select { |f| File.exists?(f) })
+    FileUtils.rm_r(@fs_objects[:dirs].select { |d| File.exists?(d) })
   end
 end
 
@@ -35,12 +66,12 @@ class CloningMachine
   @log : Logger
   @what2do : Proc(Int32)
 
-  def initialize(@how_much_clones : Int32, @min_time_btw_forks = MIN_TIME_BTW_FORKS, wait_for_term = true, &block : -> Int32)
+  def initialize(@how_much_clones : Int32, @min_time_btw_forks = MIN_TIME_BTW_FORKS, wait_for_term = true, &block : Cleaner -> Int32)
     raise "Clones number is not valid" unless @how_much_clones > 0
     @cnt_failed_children, @cnt_forked_children = 0, 0
     @log = GlobalLogger.gimme
     @what2do = block
-#   C.setpgid(0, 0) unless C.getpgrp.to_i32 == Process.pid
+    #   C.setpgid(0, 0) unless C.getpgrp.to_i32 == Process.pid
     @children = (1..@how_much_clones).map do |proc_n|
       @log.info "parent: initially spawning (#{proc_n}) child"
       child = fork_me
@@ -58,7 +89,7 @@ class CloningMachine
         ch.send(nil)
       end
     end
-    
+
     spawn do
       ts_prv_fork = Time.now.to_unix
       loop do
@@ -86,7 +117,7 @@ class CloningMachine
         show_clones
       end
     end
-    
+
     {% for sgnl in %w(HUP TERM INT) %}
       Signal::{{sgnl.id}}.trap do
         Signal::{{sgnl.id}}.ignore
@@ -125,34 +156,39 @@ class CloningMachine
         exit @cnt_failed_children
       end
     end
-    
+
     if wait_for_term
       exit ch_wait_for_term.receive
     end
   end
-  
+
   def forced_kill(p : Process) : Bool
     2.times do |i|
       p.kill(Signal.from_value(15 - 6 * i))
       sleep 0.1
       break if p.terminated?
-      puts "process #{p.pid} dont want to die, trying more serious pressure..." 
+      puts "process #{p.pid} dont want to die, trying more serious pressure..."
     end
     p.terminated? ? true : false
   end
-  
+
   def check_status_of_dead_process(p : Process)
     @cnt_failed_children = @cnt_failed_children + 1 if p.terminated? && ((p.wait.exit_status & 0x7f) > 0)
   end
-  
+
   def fork_me : Child
     comm_pipe_read, comm_pipe_write = IO.pipe
 
     my_clone = Process.fork do
       Signal::CHLD.ignore
+      cleaner = Cleaner.new
+      ch_catch_to_clean = Channel(Cleaner).new
       {% for sgnl in %w(HUP TERM INT) %}
-        Signal::{{sgnl.id}}.trap { exit }
+        Signal::{{sgnl.id}}.trap { ch_catch_to_clean.send(cleaner) }
       {% end %}
+      spawn do
+        ch_catch_to_clean.receive.make_mrproper
+      end
       begin
         exit(@what2do.call)
       rescue ex
