@@ -2,9 +2,9 @@ module POSIX
   lib C
     struct SemT
       {% begin %}
-  		{% k = LibC::Int.class.stringify[3..4] %}
-  		size : StaticArray(LibC::Char, {{k.id}})
-  		{% end %}
+        {% k = LibC::Int.class.stringify[3..4] %}
+        size : StaticArray(LibC::Char, {{k.id}})
+      {% end %}
     end
 
     alias ModeT = LibC::Int
@@ -14,6 +14,7 @@ module POSIX
     fun sem_wait(sem : SemT*) : LibC::Int
     fun sem_unlink(sem : SemT*) : LibC::Int
     fun sem_destroy(sem : SemT*) : LibC::Int
+    fun sem_getvalue(sem: SemT*, sem_value : LibC::Int*) : LibC::Int
   end
 
   class Semaphore
@@ -37,6 +38,11 @@ module POSIX
 
     def up
       C.sem_post(@sem)
+    end
+    
+    def value : Tuple(LibC::Int, LibC::Int?)
+      C.sem_getvalue(@sem, out cur_sem_val)
+      cur_sem_val > 0 ? {cur_sem_val, nil} : {0, cur_sem_val == 0 ? nil : cur_sem_val.abs} 
     end
   end
 end
