@@ -15,6 +15,7 @@ module POSIX
     fun sem_unlink(sem : SemT*) : LibC::Int
     fun sem_destroy(sem : SemT*) : LibC::Int
     fun sem_getvalue(sem: SemT*, sem_value : LibC::Int*) : LibC::Int
+    fun sem_trywait(sem: SemT*) : LibC::Int
   end
 
   class Semaphore
@@ -33,9 +34,21 @@ module POSIX
     end
 
     def down
-      C.sem_wait(@sem)
+      until C.sem_trywait(@sem) == 0
+        case Errno.value
+        when Errno::EAGAIN, Errno::EINTR
+          Fiber.yield
+          next
+        else
+          raise Errno.new("failed to wait for freeing semaphore #{@name}:") 
+        end
+      end
     end
-
+    
+    def blocking_down
+      C.sem_wait(@sem)  
+    end
+    
     def up
       C.sem_post(@sem)
     end
