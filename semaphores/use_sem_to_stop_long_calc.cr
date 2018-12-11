@@ -27,7 +27,7 @@ module My
 
   def self.fire_guard
     t = Thread.new do
-      @@sem.down
+      @@sem.blocking_down
       @@clnr.make_mrproper
       puts "DONE after #{Time.now.to_unix - My.start_ts} sec."
       LibC._exit(1)
@@ -36,7 +36,8 @@ module My
 end
 
 File.write(file_name = "/tmp/#{Process.pid}", "#{Process.pid}")
-puts "BEGIN pid=#{Process.pid} ts=#{My.start_ts} file=#{file_name}"
+sem_val, _ = My.get_sem.value
+puts "pid=#{Process.pid} ts=#{My.start_ts} file=#{file_name} sem_val=#{sem_val}\nExecute `kill -USR1 #{Process.pid}` in other console to unlock semaphore!\n"
 
 My.cleaner.add_file(file_name)
 My.cleaner.add_proc(["don't", "worry", "be", "happy"]) do |arr|
