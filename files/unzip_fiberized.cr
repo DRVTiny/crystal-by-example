@@ -31,7 +31,7 @@ module ZipUnpackFiberized
 			spawn do
 				while	z_entry = ch_files.receive
 					File.open(z_entry.filename, "w") do |unpacked_file|
-						unpacked_file.print z_entry.open {|io| io.gets_to_end }
+						z_entry.open {|z_io| IO.copy z_io, unpacked_file}
 					end
 				end
 				ch_end.send(nil)
