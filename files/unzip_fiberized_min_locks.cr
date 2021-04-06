@@ -39,11 +39,11 @@ module ZipUnpackFiberized
 	
 		ch_end = Channel(Nil).new
 		si, ei = 0, 0
-		n_proc.times do
+		n_proc.times do |fiber_n|
 			ei = si + n_files_per_thread + (rmn_files > 0 ? 1 : 0) - 1
 			rmn_files -= 1
 			ssi, eei = si, ei
-			spawn do
+			fiber_work = ->() do
 				(ssi..eei).each do |i|
 					z_entry = files2extract[i]
 #					log "extracting file #{z_entry.filename}"
@@ -51,11 +51,18 @@ module ZipUnpackFiberized
 						z_entry.open {|z_io| IO.copy z_io, unpacked_file}
 					end
 				end
-				ch_end.send(nil)
+				ch_end.send(nil) if fiber_n > 0
 			end
+			
+			if fiber_n > 0
+				spawn &fiber_work
+			else
+				fiber_work.call
+			end
+			
 			si = ei + 1
 		end
 		
-		n_proc.times { ch_end.receive }
+		(n_proc - 1).times { ch_end.receive }
 	end
 end
