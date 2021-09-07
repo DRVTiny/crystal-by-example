@@ -1,0 +1,17 @@
+name: crystal-by-example
+version: 0.2.3
+
+authors:
+  - Andrey A. Konovalov <drvtiny@gmail.com>
+
+targets:
+  sele:
+    main: src/no-ones-laughing.cr
+
+dependencies:
+  selenium:
+    github: matthewmcgarvey/selenium.cr
+    
+crystal: 1.1.1
+
+license: MIT
